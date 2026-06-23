@@ -221,6 +221,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
     <div class="tab" data-tab="onhold">PS On Hold <span class="tab-badge" id="badge-onhold">0</span></div>
     <div class="tab" data-tab="pendingcsm">Pending on CSM/OB <span class="tab-badge" id="badge-pendingcsm">0</span></div>
     <div class="tab" data-tab="alltickets">All Tickets <span class="tab-badge" id="badge-alltickets">0</span></div>
+    <div class="tab" data-tab="csuse">📋 CS_use <span class="tab-badge" id="badge-csuse">0</span></div>
     <div class="tab" data-tab="enterprise">Enterprise <span class="tab-badge" id="badge-enterprise">0</span></div>
     <div class="tab" data-tab="csm">CSM <span class="tab-badge" id="badge-csm">0</span></div>
     <div class="tab" data-tab="summary">📊 Monthly Summary</div>
@@ -284,6 +285,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
   <div class="tab-content" id="tab-onhold"><div id="detail-onhold"></div></div>
   <div class="tab-content" id="tab-pendingcsm"><div id="detail-pendingcsm"></div></div>
   <div class="tab-content" id="tab-alltickets"><div id="detail-alltickets"></div></div>
+  <div class="tab-content" id="tab-csuse"><div id="detail-csuse"></div></div>
   <div class="tab-content" id="tab-enterprise"><div id="detail-enterprise"></div></div>
   <div class="tab-content" id="tab-csm"><div id="detail-csm"></div></div>
   <div class="tab-content" id="tab-summary"><div id="detail-summary"></div></div>
@@ -801,6 +803,118 @@ function renderAll(){
   renderSummaryTab(getFilteredAllTickets());
   renderProductOverview('Studio','detail-studio-overview', base.filter(r=>r['Product (Studio/Vini)']==='Studio'));
   renderProductOverview('Vini',  'detail-vini-overview',   base.filter(r=>r['Product (Studio/Vini)']==='Vini'));
+  renderCsUseTab(window._allTicketsData||[]);
+}
+
+// ─── CS_use TAB (consolidated view — all tickets, all statuses) ────────────────
+const CSUSE_COLUMNS = [
+  { key:'Ticket ID',                label:'Ticket ID' },
+  { key:'Status',                   label:'Status' },
+  { key:'Priority',                 label:'Priority' },
+  { key:'Created time',             label:'Created time',     date:true },
+  { key:'Resolved time',            label:'Resolved time',    date:true },
+  { key:'Closed time',              label:'Closed time',      date:true },
+  { key:'Last update time',         label:'Last update time', date:true },
+  { key:'Resolution time (in hrs)', label:'Resolution time (hrs)', num:true },
+  { key:'Resolution status',        label:'Resolution status' },
+  { key:'First response status',    label:'First response status' },
+  { key:'Enterprise Name',          label:'Enterprise Name' },
+  { key:'Product (Studio/Vini)',    label:'Product (Studio/Vini)' },
+  { key:'Enterprise ID',            label:'Enterprise ID' },
+];
+window._csUseSortKey = window._csUseSortKey || 'Ticket ID';
+window._csUseSortDir = window._csUseSortDir || -1;
+
+function csUseFmtDate(v){
+  if(!v) return '';
+  const d=new Date(v); if(isNaN(d)) return v;
+  return d.toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+function csUseSla(v){
+  if(!v) return '';
+  const c=/within/i.test(v)?'#16a34a':(/violat/i.test(v)?'#dc2626':'inherit');
+  return `<span style="color:${c};font-weight:500;">${v}</span>`;
+}
+function renderCsUseTab(allTickets){
+  window._csUseData = Array.isArray(allTickets)?allTickets:[];
+  const el=document.getElementById('detail-csuse'); if(!el) return;
+  const badge=document.getElementById('badge-csuse'); if(badge) badge.textContent=window._csUseData.length;
+
+  // Build the chrome once; thereafter only re-render the table body.
+  if(!el.dataset.built){
+    const statuses=[...new Set(window._csUseData.map(r=>r['Status']).filter(Boolean))].sort();
+    el.innerHTML=`
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <input id="csuse-search" placeholder="Search any field…" style="padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px;min-width:220px;background:var(--surface);color:var(--text);">
+        <select id="csuse-status" style="padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:var(--surface);color:var(--text);">
+          <option value="">All statuses</option>${statuses.map(s=>`<option>${s}</option>`).join('')}
+        </select>
+        <span id="csuse-count" style="color:var(--muted);font-size:12px;"></span>
+        <button onclick="csUseExport()" style="margin-left:auto;padding:7px 14px;border:1px solid var(--accent);border-radius:8px;background:var(--accent);color:#fff;font-size:13px;cursor:pointer;font-weight:500;">⬇ Export Excel (CSV)</button>
+      </div>
+      <div class="table-wrap" style="overflow:auto;max-height:calc(100vh - 280px);">
+        <table class="ticket-table"><thead><tr id="csuse-head"></tr></thead><tbody id="csuse-body"></tbody></table>
+      </div>`;
+    el.dataset.built='1';
+    document.getElementById('csuse-search').addEventListener('input',csUseRenderTable);
+    document.getElementById('csuse-status').addEventListener('change',csUseRenderTable);
+  }
+  csUseRenderTable();
+}
+function csUseRows(){
+  const q=(document.getElementById('csuse-search')?.value||'').trim().toLowerCase();
+  const sf=document.getElementById('csuse-status')?.value||'';
+  let rows=(window._csUseData||[]).filter(r=>{
+    if(sf && r['Status']!==sf) return false;
+    if(!q) return true;
+    return CSUSE_COLUMNS.some(c=>String(r[c.key]??'').toLowerCase().includes(q));
+  });
+  const key=window._csUseSortKey, dir=window._csUseSortDir;
+  const col=CSUSE_COLUMNS.find(c=>c.key===key);
+  rows.sort((a,b)=>{
+    let x=a[key]??'',y=b[key]??'';
+    if(col&&col.num){x=parseFloat(x)||0;y=parseFloat(y)||0;}
+    else if(col&&col.date){x=x?new Date(x).getTime():0;y=y?new Date(y).getTime():0;}
+    else if(key==='Ticket ID'){x=parseInt(x)||0;y=parseInt(y)||0;}
+    else{x=String(x).toLowerCase();y=String(y).toLowerCase();}
+    return x<y?-1*dir:x>y?1*dir:0;
+  });
+  return rows;
+}
+function csUseRenderTable(){
+  const head=document.getElementById('csuse-head'), body=document.getElementById('csuse-body');
+  if(!head||!body) return;
+  head.innerHTML=CSUSE_COLUMNS.map(c=>{
+    const arrow=c.key===window._csUseSortKey?(window._csUseSortDir===1?' ▲':' ▼'):'';
+    const cls=c.key===window._csUseSortKey?'sorted':'';
+    return `<th class="${cls}" onclick="csUseSort('${c.key.replace(/'/g,"\\'")}')">${c.label}${arrow}</th>`;
+  }).join('');
+  const rows=csUseRows();
+  const cnt=document.getElementById('csuse-count');
+  if(cnt) cnt.textContent=`Showing ${rows.length} of ${(window._csUseData||[]).length} tickets`;
+  if(!rows.length){ body.innerHTML=`<tr><td colspan="${CSUSE_COLUMNS.length}" style="padding:30px;text-align:center;color:var(--muted);">No tickets match your filters.</td></tr>`; return; }
+  body.innerHTML=rows.map(r=>'<tr>'+CSUSE_COLUMNS.map(c=>{
+    let v=r[c.key]??'',cell;
+    if(c.date) cell=csUseFmtDate(v);
+    else if(c.key==='Resolution status'||c.key==='First response status') cell=csUseSla(v);
+    else cell=String(v);
+    return `<td${c.num?' style="text-align:right;font-variant-numeric:tabular-nums;"':''}>${cell}</td>`;
+  }).join('')+'</tr>').join('');
+}
+function csUseSort(key){
+  if(window._csUseSortKey===key) window._csUseSortDir*=-1;
+  else{ window._csUseSortKey=key; window._csUseSortDir=1; }
+  csUseRenderTable();
+}
+function csUseExport(){
+  const rows=csUseRows();
+  const esc=v=>{ v=String(v??''); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const header=CSUSE_COLUMNS.map(c=>esc(c.label)).join(',');
+  const lines=rows.map(r=>CSUSE_COLUMNS.map(c=>{ let v=r[c.key]??''; if(c.date)v=csUseFmtDate(v); return esc(v); }).join(','));
+  const csv='﻿'+[header,...lines].join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download='cs_use_consolidated_tickets.csv'; a.click(); URL.revokeObjectURL(a.href);
 }
 
 // ─── PRODUCT OVERVIEW (Studio / Vini) ────────────────────────────────────────
